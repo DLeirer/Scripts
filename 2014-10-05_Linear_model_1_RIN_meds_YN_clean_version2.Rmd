@@ -1,0 +1,497 @@
+Adding Rows to Lumibatch Phenotdata dataframes 
+=======================================================
+
+
+```{r}
+
+
+
+```
+
+
+## Setwd
+```{r setwd, eval=TRUE, tidy=TRUE}
+setwd("/home/daniel/Documents/A_Year_1_PhD/GAP_Data/2015_01_29_GAP_Final_Limma_analysis")
+
+
+getwd()
+```
+
+## Load Libs
+```{r load_libs, tidy=TRUE}
+
+library(lumi)
+library(limma)
+library(xtable)
+
+```
+
+
+## Load eset
+```{r load_eset, tidy=TRUE}
+load("GAP_DL_FINAL.eset_final.RData")
+str(eset_final)
+
+loadcannabisdata <- read.csv("GAP Gene-Ex manifest_added info_22-01-14.csv", head=TRUE, sep=",",na.string=c("NA","Unknown"),as.is=T)
+load_age_and_dup_data <- read.csv("Enhanced_Age_DUP_Conrad_05-03-14.csv", head=TRUE, sep=",",as.is=T, na.string=c("NA","Unknown") )
+load_meds <- read.csv  ("GAP_Medication_Daniel_2014.csv", head=TRUE,sep=";",as.is=T, na.string=c("NA","Unknown"))
+load_master <- read.csv  ("GAP_Relevant_data_from_masterspread_sheet_with_study_ID3.csv", head=TRUE,sep=",",as.is=T, na.string=c("."))
+```
+
+
+##Check that Ethinicity (in cannabis data) and age  dup are numeric.
+```{r}
+
+load_age_and_dup_data$DUP_enhanced <- as.numeric(load_age_and_dup_data$DUP_enhanced)
+load_master$gender <- as.numeric(load_master$gender)
+load_master$ethnicity_selfreportfolders <- as.numeric(load_master$ethnicity_selfreportfolders)
+load_master$ethnicity_genetics <- as.numeric(load_master$ethnicity_genetics)
+str(load_master)
+
+```
+
+## Create neweset. which is free of gender failed samlples, unknowns (case control status), and duplicates. 
+```{r, tidy=TRUE}
+
+pheno_data <- pData(eset_final)
+
+
+samples_gendercheck_pass <- subset(pheno_data, pheno_data$XIST_PRKY_Combined_Gender_Fail=="PASS",useNA="ifany") # Remove gender failed samples
+
+samples_gendercheck_duplicate_pass  <-samples_gendercheck_pass[duplicated(samples_gendercheck_pass$Study_ID)==F,] #Remove duplicates
+
+samples_gendercheck_duplicate_unknown_pass  <-samples_gendercheck_duplicate_pass[samples_gendercheck_duplicate_pass$PHENOTYPE!="UNKNOWN",] #Remove unknown phenotype
+
+samples_only_baseline_pass  <-samples_gendercheck_duplicate_unknown_pass[samples_gendercheck_duplicate_unknown_pass$Groups_orginal=="BASELINE",] 
+
+GOOD_SAMPLES <- samples_only_baseline_pass$sampleID
+
+neweset <- eset_final[,GOOD_SAMPLES]
+```
+
+##create New Pheno Data and add sample order!!!
+```{r}
+
+new_pheno_data <- pData(neweset)
+new_pheno_data$sample_order <- 1:dim(new_pheno_data)[1] ##add sample order column
+str(new_pheno_data)
+
+dim(new_pheno_data [new_pheno_data$PHENOTYPE =="CONTROL",]) ## 192 Cases, 155 CONTROL
+str(new_pheno_data)
+
+colnames(new_pheno_data)[colnames(new_pheno_data)=="Study_ID"] <- "study_ID"
+str(new_pheno_data)
+
+```
+
+##Tidy up a bit
+```{r}
+ethnicity_sampleID<- loadcannabisdata [,c("african","Indian","study_ID","groups")]
+
+age_sampleID<- load_age_and_dup_data [,c("Age_enhanced","Groups","study_ID")]
+
+med_study_ID <- load_meds [,c("yes_no","total_cp","study_ID","case_control_status")]
+
+master_study_ID <- load_master [,c("dob","ethnicity_genetics","study_ID","ethnicity_selfreportfolders")]
+```
+
+
+##Ehnicity
+```{r}
+loadcannabisdata1 <-  ethnicity_sampleID[ethnicity_sampleID$groups=="baseline" ,]
+ga_african <- loadcannabisdata1[complete.cases(loadcannabisdata1$african),] ##Remove NA  
+  
+  
+##ga_african$african ##check that NA are removed
+##ga_african$Indian ##check that NA are removed
+
+
+```
+
+
+##Age
+```{r}
+just_baseline_age <-  age_sampleID[age_sampleID$Groups=="baseline" ,]
+unknown_removed_age <- just_baseline_age [complete.cases(just_baseline_age$Age_enhanced),]
+
+```
+
+##Medication
+```{r}
+
+load_meds_d_removed  <-med_study_ID[duplicated(med_study_ID$study_ID)==F,] #Remove duplicates
+
+```
+
+##Master
+```{r}
+str(master_study_ID)
+master_no_na <- master_study_ID[complete.cases(master_study_ID$dob),] 
+str(master_no_na)
+
+master_no_na  <- master_study_ID[master_study_ID$dob!="NA",] 
+master_no_na <- master_study_ID[complete.cases(master_study_ID$ethnicity_genetics),] 
+master_no_na$dob
+  
+merged_master_dob_sex <- merge (master_no_na,new_pheno_data, by="study_ID")
+
+str(merged_master_dob_sex)
+table(merged_master_dob_sex$GROUPS)
+```
+
+
+
+
+##Merge everything
+```{r}
+
+
+merged_age_sex  <- merge (unknown_removed_age,new_pheno_data, by="study_ID")
+merged_age_sex_ethnicity  <- merge (merged_age_sex,ga_african, by="study_ID")
+merged_age_sex_ethnicity_meds  <- merge (merged_age_sex_ethnicity,load_meds_d_removed, by="study_ID")
+
+
+merged_age_sex_ethnicity_meds_duplicate_pass  <-merged_age_sex_ethnicity_meds[duplicated(merged_age_sex_ethnicity_meds$study_ID)==F,] 
+
+str(new_pheno_data)
+str(merged_age_sex)
+str(merged_age_sex_ethnicity_meds)
+str(merged_age_sex_ethnicity_meds_duplicate_pass)
+table(merged_age_sex_ethnicity_meds$SEX)
+
+library("Hmisc")
+med_describe <- describe(merged_age_sex_ethnicity_meds)
+med_describe[c("study_ID","SEX","PHENOTYPE", "Groups_orginal","Age_enhanced")]
+med_describe <- describe(merged_age_sex_ethnicity_meds_duplicate_pass)
+med_describe[c("study_ID","SEX","PHENOTYPE", "Groups_orginal")]
+
+
+dim(merged_age_sex_ethnicity_meds [merged_age_sex_ethnicity_meds$PHENOTYPE =="CASE",])
+
+length(merged_age_sex_ethnicity_meds$SEX)
+
+table(merged_age_sex_ethnicity_meds$SEX)
+```
+
+
+
+##Add merged dataframe to Lumibatch file. Subset by sampleID first.
+```{r}
+
+neweset2 <- neweset[,merged_age_sex_ethnicity_meds$sampleID]
+neweset2 <- neweset[,merged_age_sex_ethnicity$sampleID]
+str(neweset2)
+
+
+
+pData(neweset2) <- merged_age_sex_ethnicity_meds
+pData(neweset2) <- merged_age_sex_ethnicity
+
+controlData <- controlData(neweset2)
+str(controlData)
+controlData$ProbeID
+str(neweset2)
+
+## Extra safety check. Not neccesary for analysis, they are just here for you to check what you are doing. 
+old_pdata <- pData(neweset2)
+head(old_pdata)
+head(merged_pheno_african_age_data)
+
+summary(rownames(old_pdata) %in% rownames(merged_pheno_african_age_data) )
+
+dd <- cbind(rownames(old_pdata),rownames(merged_pheno_african_age_data) )
+dd <- as.data.frame(dd)
+head(dd)
+dd$GOOD <- ifelse(dd[,1]==dd[,2], "MATCH","XXX")
+table(dd$GOOD)
+
+
+```
+
+##Save neweset2 to disk
+```{r}
+?save
+save(neweset2, file = paste("~/Documents/A_Year_1_PhD/GAP_Data/Case_Control_Analysis/2014-11-11_case_control_model_Final", "GAP.newset_meds.RData", sep = ""), compress = T)
+
+load ("GAP.neweset_meds.RData")
+str (neweset2)
+```
+
+## create design matrix
+```{r}
+gap <- factor(neweset2$PHENOTYPE)
+gap_SEX <- factor(neweset2$SEX)
+gap_african <- as.numeric(neweset2$african)
+gap_Indian <- as.numeric(neweset2$Indian)
+gap_Age <- as.numeric(neweset2$Age_enhanced)
+gap_med_yn <- as.factor (neweset2$yes_no)
+gap_med <- as.numeric (neweset2$total_cp)
+
+
+
+design = model.matrix(~0+gap+gap_SEX+gap_african+gap_Indian+gap_Age+gap_med_yn, data=neweset2)
+design = model.matrix(~0+gap+gap_SEX+gap_african+gap_Indian+gap_Age+gap_med, data=neweset2)
+design = model.matrix(~0+gap+gap_SEX+gap_african+gap_Indian+gap_Age, data=neweset2)
+
+head(design)
+summary (design)
+
+
+
+```
+
+
+## Limma lmFit
+```{r limma_lmFit, tidy=TRUE}
+
+fit <- lmFit(neweset2, design)
+
+
+```
+
+## Limma makeContrasts 
+
+```{r limma_makeContrasts, tidy=TRUE}
+
+contrasts <- makeContrasts(gapCASE-gapCONTROL, levels=design)
+contrasts
+
+
+```
+
+
+
+## Limma eBayes on makeContrasts
+
+```{r limma_eBayes_on_makeContrasts, tidy=TRUE}
+contrast.fit1 <- contrasts.fit(fit, contrasts)
+
+
+contrast.fit1 <- eBayes(contrast.fit1)
+
+
+```
+
+```{r limma_topTable, comment=NA, width=100, tidy=TRUE}
+# Limma topTabl
+top_de_genes1 <- topTable(contrast.fit1, coef=1, number=5000,adjust.method="fdr",p.value=1,confint=TRUE)
+head(top_de_genes1)
+str(top_de_genes1)
+
+
+# tidy up
+top_de_genes1$logFC <- round(top_de_genes1$logFC,2)
+top_de_genes1$CI.025 <- round(top_de_genes1$CI.025,2)
+top_de_genes1$CI.975 <- round(top_de_genes1$CI.975,2)
+top_de_genes1$AveExpr <- round(top_de_genes1$AveExpr,2)
+top_de_genes1$t <- round(top_de_genes1$t,2)
+top_de_genes1$P.Value <- signif(top_de_genes1$P.Value,3)
+top_de_genes1$adj.P.Val <- signif(top_de_genes1$adj.P.Val,3)
+top_de_genes1$B <- round(top_de_genes1$B,2)
+
+
+
+
+# Limma topTable reduce cols
+top_de_genes_small1 <- top_de_genes1[,c("SYMBOL","logFC","P.Value","adj.P.Val","B")]
+
+dim(top_de_genes_small1)
+head(top_de_genes_small1,  n= 100)
+new<-top_de_genes_small1[top_de_genes_small1=="DEFA1B"]
+
+
+
+?head
+```
+
+
+## Limma top 100 genes
+```{r gene_list}
+top_de_genes1$SYMBOL
+write.table(top_de_genes1, file="No_Med.txt",row.names=F,quote=FALSE)
+write.table(as.data.frame(top_de_genes1$SYMBOL), file="Full_list_Symbol.txt",row.names=F,quote=FALSE,col.names=FALSE)
+write.csv(top_de_genes1, file = "all_data_med_ce.csv")
+
+```
+
+
+```{r gene_list}
+Model <- glm( gap ~ gap_SEX+gap_african+gap_Indian+gap_rin+gap_Age+gap_med , family="binomial")
+summary(Model)
+anova(Model)
+```
+
+##Plots
+```{r}
+
+x <- subset(top_de_genes_small1,top_de_genes_small1$logFC<0);dim(x) ##for upregulated genes
+
+DEFA1B <-subset (top_de_genes1,top_de_genes1$TargetID=="DEFA1B")
+DEFA1B
+
+
+
+
+top_gene_DEFA1B_ISO1 <- "Zp51_cyCF6hIoee3lc"
+top_gene_DEFA1B_ISO2 <- "lX5zIIXqEih57eV3es"
+top_gene_DEFA1B_ISO3 <- "lV5KVKeJR1KQieOK_c"
+
+gx_gene_DEFA1B_ISO1 <- exprs(neweset2[top_gene_DEFA1B_ISO1,])
+gx_gene_DEFA1B_ISO2 <- exprs(neweset2[top_gene_DEFA1B_ISO2,])
+gx_gene_DEFA1B_ISO3 <- exprs(neweset2[top_gene_DEFA1B_ISO3,])
+
+
+plot(as.numeric(gx_gene_DEFA1B_ISO1),col=  ifelse(neweset2$PHENOTYPE=="CASE","red","blue"),main="Scatterplot of DEFA1B_ISO1" )
+plot(as.numeric(gx_gene_DEFA1B_ISO2),col=  ifelse(neweset2$PHENOTYPE=="CASE","red","blue"),main="Scatterplot of DEFA1B_ISO2" )
+plot(as.numeric(gx_gene_DEFA1B_ISO3),col=  ifelse(neweset2$PHENOTYPE=="CASE","red","blue"),main="Scatterplot of DEFA1B_ISO3" )
+
+
+par(mfcol=c(2,3))
+plot(as.numeric(gx_gene_DEFA1B_ISO1),col=  ifelse(neweset2$PHENOTYPE=="CASE","red","blue"),main="Scatterplot DEFA1B_ISO1", ylab="Relative Expression Level" )
+boxplot( as.numeric(gx_gene_DEFA1B_ISO1) ~ neweset2$PHENOTYPE, notch=T, main="Boxplot of DEFA1B_ISO1 ", ylab="Relative Expression Level" )
+
+plot(as.numeric(gx_gene_DEFA1B_ISO2),col=  ifelse(neweset2$PHENOTYPE=="CASE","red","blue"),main="Scatterplot DEFA1B_ISO2", ylab="" )
+boxplot( as.numeric(gx_gene_DEFA1B_ISO2) ~ neweset2$PHENOTYPE, notch=T, main="Boxplot of DEFA1B_ISO2 " )
+
+plot(as.numeric(gx_gene_DEFA1B_ISO3),col=  ifelse(neweset2$PHENOTYPE=="CASE","red","blue"),main="Scatterplot DEFA1B_ISO3", ylab="" )
+boxplot( as.numeric(gx_gene_DEFA1B_ISO3) ~ neweset2$PHENOTYPE, notch=T, main="Boxplot of DEFA1B_ISO3 " )
+
+
+##DEFA1 and DEFA3
+DEFA1 <-subset (top_de_genes1,top_de_genes1$TargetID=="DEFA1")
+DEFA3 <-subset (top_de_genes1,top_de_genes1$TargetID=="DEFA3")
+DEFA1
+DEFA3
+
+top_gene_DEFA1 <- "QyCF6hIoee3ld3rRXk"
+top_gene_DEFA3 <- "cfnMgheoSKHnt5Xd60"
+
+gx_gene_DEFA1 <- exprs(neweset2[top_gene_DEFA1,])
+gx_gene_DEFA3 <- exprs(neweset2[top_gene_DEFA3,])
+
+par(mfcol=c(2,2))
+plot(as.numeric(gx_gene_DEFA1),col=  ifelse(neweset2$PHENOTYPE=="CASE","red","blue"),main="Scatterplot DEFA1", ylab="Relative Expression Level" )
+boxplot( as.numeric(gx_gene_DEFA1) ~ neweset2$PHENOTYPE, notch=T, main="Boxplot of DEFA1 ", ylab="Relative Expression Level" )
+
+plot(as.numeric(gx_gene_DEFA3),col=  ifelse(neweset2$PHENOTYPE=="CASE","red","blue"),main="Scatterplot DEFA3", ylab="" )
+boxplot( as.numeric(gx_gene_DEFA3) ~ neweset2$PHENOTYPE, notch=T, main="Boxplot of DEFA3 " )
+
+
+?boxplot
+
+str(neweset2)
+
+##invalid class "LumiBatch" object: 1: sampleNames differ between assayData and phenoData
+##invalid class "LumiBatch" object: 2: sampleNames differ between phenoData and protocolData
+
+
+```
+
+
+
+##Look for DEFA4
+```{r}
+str(neweset2)
+
+feature_data <- featureData(eset_final)
+str(feature_data)
+Target_ID<-feature_data$TargetID
+Target_ID
+
+find <-Target_ID [Target_ID == "DEFA1B"]
+
+find
+
+write.table(Target_ID, file="ALL_GAP_GENE_SYMBOLS_4756.txt",row.names=F,quote=FALSE)
+
+```
+
+
+##Check for up and downregulated Genes from Sanders Et all and Gardiner et al. 
+```{r}
+
+load_GS_gene_lists <- read.csv("Combined_Gene_list_all_papers.csv", head=TRUE, sep=",",na.string=c("NA","Unknown"),as.is=T)
+
+
+
+dim(load_GS_gene_lists[load_GS_gene_lists$ALL])
+str(load_GS_gene_lists)
+Gap_no_dup_all<- load_GS_gene_lists$GAP_no_DUP_ALL 
+Gap_no_dup_all_200<- load_GS_gene_lists$GAP_no_DUP_Top200 
+Gap_dup_control<- load_GS_gene_lists$GAP_DUP_CONTROL   
+Gap_dup_control_200<- load_GS_gene_lists$GAP_DUP_Control_Top200
+Gap_dup<- load_GS_gene_lists$GAP_DUP
+all_gap <- top_de_genes1$SYMBOL
+
+
+gardiner_data <- load_GS_gene_lists$gardiner
+sanders_data <- load_GS_gene_lists$sanders
+all_data <- load_GS_gene_lists$All
+
+length(all_gap[all_gap %in% all_data])
+all_gap[all_gap %in% all_data]
+
+length(Gap_dup_control[Gap_dup_control %in% all_data])
+Gap_dup_control[Gap_dup_control %in% all_data]
+
+length(Gap_dup[Gap_dup %in% all_data])
+Gap_dup[Gap_dup %in% all_data]
+Gap_dup
+
+Gap_dup_control[Gap_dup_control%in%all_data]
+Gap_dup[Gap_dup%in%all_data]
+
+```
+
+##Volcano Plot
+```{r}
+
+##ggplot2 volcanoplot
+library (ggplot2)
+top_de_genes_vol <- topTable(contrast.fit1, coef=1, number=5000,adjust.method="fdr",p.value=1,confint=TRUE, sort.by="logFC")
+top_de_genes_vol$threshold = as.factor(abs(top_de_genes_vol$logFC) > 0.0 & top_de_genes_vol$adj.P.Val < 0.05)
+str(top_de_genes_vol)
+
+
+G_volcanoplot = ggplot(data=top_de_genes_vol, aes(x=logFC, y=-log10(P.Value), colour=threshold)) +
+  geom_point(alpha=0.4, size=1.75) +
+  theme(legend.position = "none") +
+  xlim(c(-1.5, 1.5)) + ylim(c(0, 7.5)) +
+  xlab("Relative change in Gene expression") + ylab("-log10 unadjusted p-value")+
+  geom_vline(xintercept = 0, colour = "black")+
+  ggtitle ("Volcano Plot of GAP expression Data")
+  ##theme(plot.title = element_text(lineheight "12", face="bold"))
+G_volcanoplot 
+
+
+# Installation ------------------------------------------------------------
+ 
+# First, install devtools from CRAN then install Tmisc 
+# directly from GitHub using devtools (https://github.com/stephenturner/Tmisc)
+install.packages("calibrate")
+devtools::install_github("stephenturner/Tmisc")
+ 
+# Load the Tmisc library
+
+str(top_de_genes_vol)
+
+# Make a basic volcano plot
+library(Tmisc)
+library(calibrate)
+
+with(top_de_genes_vol, plot(logFC, -log10(P.Value), pch=20, main="Volcano plot (No_Med)", xlim=c(-1.5,1.5)))
+
+# Add colored points: red if padj<0.05, orange of log2FC>1, green if both)
+with(subset(top_de_genes_vol, adj.P.Val >0.05 ), points(logFC, -log10(P.Value), pch=20, col="firebrick"))
+with(subset(top_de_genes_vol, adj.P.Val <0.05 ), points(logFC, -log10(P.Value), pch=20, col="navy"))
+##with(subset(top_de_genes_vol, logFC >1 ), points(logFC, -log10(P.Value), pch=20, col="green"))
+
+ 
+# Label points with the textxy function from the calibrate plot
+with(subset(top_de_genes_vol, logFC >0.7), textxy(logFC, -log10(P.Value), labs=TargetID, cex=.7))
+with(subset(top_de_genes_vol, logFC < -0.7& adj.P.Val <0.05 ), textxy(logFC, -log10(P.Value), labs=TargetID, cex=.7))
+with(subset(top_de_genes_vol, adj.P.Val <0.0002), textxy(logFC, -log10(P.Value), labs=TargetID, cex=.7))
+#with(subset(top_de_genes_vol, logFC < -0.6 & adj.P.Val <0.008 ), textxy(logFC, -log10(P.Value), labs=TargetID, cex=.7))
+
+
+```

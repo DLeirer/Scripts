@@ -1,0 +1,409 @@
+****
+
+Id Detected Probes per GROUPS
+==============================
+Here we are creating lists of probes that have expression levels greater than of the mean intensity of the negative control beads.  
+This seems to be a better measure of "expressed/detected" than Illumina's own detection p-values. You can see proof of that when looking at XIST expression levels versus Geneder using Illumina's own detection p-values for both p=0.05 and p=0.01!  
+The expression levels are taken from the **background corrected** data \[eset_bg\].
+This needs be be run after the gender check, as Y Chrom probe expression is determined in xist_MALES only. 
+
+```{r id_detected_probes_per_group, eval=TRUE}
+## PROBE DETECTED 2SD ABOVE MEAN BACKGROUND ##
+cat(" Calculating Probe Detection rates. \n Probe is seen as Detected if it has background corrected signal intensity greather than the mean intensity of the negative control beads","\r","\n")
+## get expression matrix
+## gx <- exprs(eset_bg)
+## chaned to raw measures as this brings some more data
+gx <- exprs(eset_raw)
+
+
+## get negative bead ranges mean or max or 2SD mean  of neg beads
+neg_2sd <- neg_mean + 2*neg_sd
+
+## sweep through gx matrix to id probes greater than Mean of negative beads
+## rows are probes, cols are samples 
+
+## THIS IS THE MAIN PROBE DETECTION CALCULATION
+det <- sweep(gx, 1, round(neg_mean,2),">")
+
+## Writing Probe Detection Calls to file #
+det_tmp  <- as.data.frame(det)
+det_tmp$nuID <- rownames(det_tmp)
+det_tmp$min_expression <- apply(gx,1,min)
+det_tmp$max_expression <- apply(gx,1,max)
+det_tmp$mean_expression <- apply(gx,1,mean)
+det_tmp$sd_expression <- apply(gx,1,sd)
+
+probe_detected <- merge(fData(eset_bg), det_tmp , by.x="nuID",by.y="nuID",sort=FALSE)
+
+cat(" Writing Probe Detection Calls to",paste(out_dir,"/",project_name,".eset_bg.probe_detected.txt",sep="") ,"\r","\n")
+write.table(probe_detected , file=paste(out_dir,"/",project_name,".eset_bg.probe_detected.txt",sep=""),sep="\t",row.names=FALSE, quote=FALSE)
+
+## probe_detection counts
+probe_detection <- rowSums(det)
+
+## n samples
+n_samples <- dim(gx)[2]
+
+## probe annotations
+probes_not_detected_in_any_sample <- probe_detection==0
+probes_detected_in_50_sample <- probe_detection>=n_samples*0.50
+probes_detected_in_80_sample <- probe_detection>=n_samples*0.80
+probes_detected_in_all_sample <- probe_detection==n_samples
+# 
+probe_annotations_0_detected <- fData(eset_bg[probes_not_detected_in_any_sample,])
+probe_annotations_50_detected  <- fData(eset_bg[probes_detected_in_50_sample ,])
+probe_annotations_80_detected  <- fData(eset_bg[probes_detected_in_80_sample ,])
+probe_annotations_100_detected  <- fData(eset_bg[probes_detected_in_all_sample,])
+
+cat(" Adding detetion call rate for all probes and samples to fData() slot for eset_bg","\r","\n")
+fData(eset_bg)$n_detected <- probe_detection
+fData(eset_bg)$n_detected_call_rate <- round( probe_detection/n_samples ,3)
+fData(eset_bg)$probes_not_detected_in_any_sample <- probe_detection==0
+fData(eset_bg)$probes_detected_in_50_sample <- probe_detection>=n_samples*0.50
+fData(eset_bg)$probes_detected_in_80_sample <- probe_detection>=n_samples*0.80
+fData(eset_bg)$probes_detected_in_all_sample <- probe_detection==n_samples
+# add min, max, mean, sd, median
+fData(eset_bg)$min_expression <- round(apply(exprs(eset_bg),1,min),3)
+fData(eset_bg)$max_expression <- round(apply(exprs(eset_bg),1,max),3)
+fData(eset_bg)$mean_expression <- round(apply(exprs(eset_bg),1,mean),3)
+fData(eset_bg)$sd_expression <- round(apply(exprs(eset_bg),1,sd),3)
+fData(eset_bg)$median_expression <- round(apply(exprs(eset_bg),1,median),3)
+
+## sample_detection counts
+cat(" sample probe detection rate","\r","\n")
+n_probes <- dim(eset_bg)[1]
+sample_detection <- colSums(det)
+pData(eset_bg)$n_probes_detected <- sample_detection
+pData(eset_bg)$n_probes_detected_call_rate <- round( sample_detection/n_probes ,3)
+save(eset_bg, file=paste(out_dir,"/",project_name,".eset_bg.RData",sep=""))
+
+## get group information from pData() slot
+group_names <- unique(pData(eset_bg)$GROUPS);
+group_names
+groups  <- pData(eset_bg)$GROUPS
+n_groups <- length(group_names)
+
+## get expression matrix ##
+gx <- exprs(eset_bg)
+# get neg_mean values. Calculated previously
+head(neg_mean)
+
+#############################################################################################
+## THIS IS THE MAIN PROBE DETECTION CALCULATION
+## loop through each group and id probes greater than  mean neg beads in X% of samples/group
+#############################################################################################
+
+for(n in group_names ) {
+cat(" Finding probes in ",probe_det/100," of sample group [",n,"] with signal intensity greather than mean intensity of the negative control beads ","\r","\n")
+
+group_label <- paste(n)
+
+sel_samples <- pData(eset_bg)$GROUPS==n;
+
+n_samples_in_group <- dim(gx[,sel_samples])[2];
+
+cat(" Number of samples in group [",n,"] = ",n_samples_in_group,"\r","\n")
+
+detection_matrix <- sweep(gx[,sel_samples],1,round(neg_mean,2)[sel_samples],">")
+
+group_probe_detection <- rowSums(detection_matrix) >= (probe_det/100)*n_samples_in_group
+
+group_probe_detection_nuID <- rownames( gx[group_probe_detection==TRUE, ])
+
+cat(" Number of probes in group [",n,"] with signal intensity greater than the mean intensity of the negative control beads = ", length(group_probe_detection_nuID) ,"\r","\n")
+
+cat(" Writing probe list to ",paste(out_dir,"/",project_name,".GROUP.",group_label,".detected_probes_nuID.txt",sep=""), "\r","\n" )
+
+det_probes <- as.data.frame(group_probe_detection_nuID)
+
+colnames(det_probes) <- c("nuID")
+
+write.table( det_probes ,file=paste(out_dir,"/",project_name,".GROUP.",group_label,".detected_probes_nuID.txt",sep=""),row.names=FALSE,quote=FALSE,col.names=FALSE)
+
+}
+
+####################################
+## Y CHROM EXPRESSION IN XIST MALES
+#####################################
+cat(" Y Chromosome probe detection based on XIST MALEs","\r","\n")
+xist_MALES <- pData(eset_bg)$xist_gender=="MALE"
+gx_y <- exprs(eset_bg[fData(eset_bg)$CHR=="Y",])
+detection_matrix_y <- sweep( gx_y[,xist_MALES],1, neg_mean[xist_MALES ],">")
+y_probe_detection <- rowSums(detection_matrix_y) >= (probe_det/100) * sum(xist_MALES==TRUE)
+y_probe_detection_nuID <- rownames( gx_y[y_probe_detection, ])
+y_det_probes <- as.data.frame(y_probe_detection_nuID)
+colnames(y_det_probes) <- c("nuID")
+write.table( y_det_probes ,file=paste(out_dir,"/",project_name,".GROUP.Y.detected_probes_nuID.txt",sep=""),row.names=FALSE,quote=FALSE,col.names=FALSE)
+
+##################################
+## writing final good probe list
+##################################
+
+cat(" writing final good probe list to ",paste(out_dir,"/",project_name,".detected_probes_nuID_final.txt",sep=""),"\r","\n")
+system(paste("cat ",out_dir,"/",project_name,"****.detected_probes_nuID.txt | sort | uniq >> ",out_dir,"/",project_name,".detected_probes_nuID_final.txt", sep="") )
+good_probes <- read.table(file=paste(out_dir,"/",project_name,".detected_probes_nuID_final.txt",sep=""), head=FALSE)
+write.table( good_probes,file=paste(out_dir,"/",project_name,".good_probes.txt",sep=""),)
+good_probes <- paste(good_probes[,1])
+n_good_probes <- length(good_probes)
+cat(" Total number of good probes = ",n_good_probes,"\n","\r" )
+good_probes_annotation <- fData(eset_bg[paste(good_probes,sep=""),])
+head(good_probes_annotation)
+
+
+########################################
+# add $good_probe annotation to eset_bg
+#########################################
+fData(eset_bg)$good_probe <- fData(eset_bg)$nuID %in% good_probes
+save(eset_bg, file=paste(out_dir,"/",project_name,".eset_bg.RData",sep=""))
+write_expression_files(eset=eset_bg,outfile=paste(out_dir,"/",project_name,".eset_bg",sep="") )
+
+# Saving good probe annotations
+cat(" saving good probe annotations to ",paste(out_dir,"/",project_name,".detected_probes_nuID_final.***",sep=""),"\r","\n")
+save(good_probes_annotation, file=paste(out_dir,"/",project_name,".detected_probes_nuID_final.RData",sep="") )
+write.table(good_probes_annotation, file=paste(out_dir,"/",project_name,".detected_probes_nuID_final.txt",sep=""),quote=F,sep="\t",row.names=F )
+
+# looksee
+table(good_probes_annotation$CHROMOSOME)
+
+# plot
+plot(good_probes_annotation$n_detected_call_rate,ylim=c(0,1),pch="*",main="Probe Call Rate: Detected Probes in 80% per group", ylab="Call Rate")
+abline(h=0.5,col="grey",lty=2);abline(h=0.8,col="red")
+
+# plot pdf
+dev.off()
+pdf(file=paste(out_dir,"/",project_name,".eset_bg.detected_probe_call_rate.pdf",sep=""),width=8,height=8)
+plot(good_probes_annotation$n_detected_call_rate,ylim=c(0,1),pch="*",main="Probe Call Rate: Detected Probes in 80% per group", ylab="Call Rate")
+abline(h=0.5,col="grey",lty=2);abline(h=0.8,col="red")
+dev.off()
+```
+
+****
+
+Transform and Normalise
+=======================
+See **Comparison of normalization methods for Illumina BeadChip HumanHT-12 v3**
+BMC Genomics. 2010; 11: 349. Ramona Schmid et al
+http://www.pubmedcentral.nih.gov/articlerender.fcgi?artid=3091625&tool=pmcentrez&rendertype=abstract
+Figure 10 Pearson correlation of log2 ratios for different normalization methods and qRT-PCR. 
+This study selects bg_rma_log_rsn as the best.
+Here we have used a better method for background correction, followed by log2 transformation and robust-splince normalisation (rsn).
+The robust spline normalization (RSN) algorithm combines the features of quantile and loess normalization.
+
+## 1. lumiExpresso
+```{r lumiExpresso, eval=TRUE}
+# See Comparison of normalization methods for Illumina BeadChip HumanHT-12 v3.
+# BMC Genomics. 2010; 11: 349.
+# Ramona Schmid et al
+# Figure 10 Pearson correlation of log2 ratios for different normalization methods and qRT-PCR. 
+# This study selects bg_rma_log_rsn as the best
+# http://www.pubmedcentral.nih.gov/articlerender.fcgi?artid=3091625&tool=pmcentrez&rendertype=abstract
+
+# log2 > rsn
+eset_bg_log2_rsn_0 <- lumiExpresso(eset_bg, bg.correct = FALSE,
+                                    variance.stabilize=TRUE, 
+                                    varianceStabilize.param=list(method=paste(transform_method,sep="")), 
+                                    normalize.param=list(method=paste(norm_method,sep="")), 
+                                    verbose=FALSE);
+```
+
+## 2. Save Transformed and Normalised data pre-sample removal
+```{r save_eset_bg_log2_rsn_0, eval=TRUE}
+# save log2 > rsn
+save(eset_bg_log2_rsn_0, file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_0.RData",sep="")  , compress=T)
+```
+
+## 3. Write Expression data files for Transformed and Normalised data pre-sample removal
+```{r write_expression_files_eset_bg_log2_rsn_0, eval=TRUE}
+# write_expression_files
+write_expression_files(eset=eset_bg_log2_rsn_0,outfile= paste(out_dir,"/",project_name,".eset_bg_log2_rsn_0",sep="") )
+```
+
+
+QC Plots of `eset_bg_log2_rsn_0` pre-sample removal
+-------------------------------------------------------------------
+
+## basic_qc_plot_lumi eset_bg_log2_rsn_0 pre-sample removal
+```{r basic_qc_plot_lumi_eset_bg_log2_rsn_0, fig.height=7, fig.width=10,eval=TRUE}
+# basic plots
+# plot to screen
+basic_qc_plot_lumi(eset_bg_log2_rsn_0)
+par(def.par)
+```
+
+```{r basic_qc_plot_lumi_eset_bg_log2_rsn_0_pdf,eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_0.basic_qc_plot_lumi.pdf",sep=""),width=11,height=8)
+basic_qc_plot_lumi(eset_bg_log2_rsn_0)
+dev.off()
+par(def.par)
+```
+
+## coloured_dendrogram_lumi eset_bg_log2_rsn_0 pre-sample removal
+```{r coloured_dendrogram_lumi_eset_bg_log2_rsn_0, fig.height=7, fig.width=10,eval=TRUE}
+# coloured_dendrogram_lumi
+# plot to screen
+coloured_dendrogram_lumi(eset_bg_log2_rsn_0)
+par(def.par)
+```
+
+```{r coloured_dendrogram_lumi_eset_bg_log2_rsn_0_pdf, eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_0.coloured_dendrogram_lumi.pdf",sep=""),width=11,height=8)
+coloured_dendrogram_lumi(eset_bg_log2_rsn_0)
+dev.off()
+par(def.par)
+```
+ 
+## pca_plot_lumi eset_bg_log2_rsn_0 pre-sample removal
+```{r pca_plot_lumi_eset_bg_log2_rsn_0, fig.height=7, fig.width=7,eval=TRUE}
+# PCA plots
+# plot to screen
+pca_plot_lumi(eset_bg_log2_rsn_0)
+par(def.par)
+```
+
+```{r pca_plot_lumi_eset_bg_log2_rsn_0_pdf,eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_0.pca_plot_lumi.pdf",sep=""),width=7,height=7)
+pca_plot_lumi(eset_bg_log2_rsn_0)
+dev.off()
+par(def.par)
+```
+
+## SampleNetwork Plots eset_bg_log2_rsn_0 pre-sample removal
+```{r sampleNetwork_plot_all_lumi_eset_bg_log2_rsn_0, fig.height=10, fig.width=10,eval=TRUE}
+# SampleNetwork Plots
+# plot to screen
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn_0, colBy="chip");
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn_0, colBy="group");
+par(def.par)
+```
+
+```{r sampleNetwork_plot_all_lumi_eset_bg_log2_rsn_0_pdf,eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_0.sampleNetwork_plot_all_lumi.pdf",sep=""),width=8,height=8)
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn_0, colBy="chip");
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn_0, colBy="group");
+dev.off()
+par(def.par)
+```
+
+
+*****
+
+SampleNetwork : Id outlier samples 
+===================================
+
+Adapted from : ***Network methods for describing sample relationships in genomic datasets: application to Huntington's disease. Michael C Oldham et al.***
+BMC Syst Biol. 2012; 6: 63.
+http://www.ncbi.nlm.nih.gov/pmc/articles/PMC3441531/?tool=pmcentrez&report=abstract
+
+## Basic Iterative SampleNetwork outlier removal
+```{r basic_sampleNetworkIterate, eval=TRUE}
+# Id outlier samples
+# Adapted from : Network methods for describing sample relationships in genomic datasets: application to Huntington's disease. Michael C Oldham et al.
+# BMC Syst Biol. 2012; 6: 63.
+# http://www.ncbi.nlm.nih.gov/pmc/articles/PMC3441531/?tool=pmcentrez&report=abstract
+# Oginal Code : 
+
+# basic_sampleNetworkIterate
+ISAoutliers <- basic_sampleNetworkIterate(eset=eset_bg_log2_rsn_0,
+                                          col_by_chip=0, 
+                                          groups="byGroup" ,
+                                          outfile=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_0",sep=""), 
+                                          IACthresh=0.95, 
+                                          sd_thrs=iac_sd_thrs );
+
+# Outliers
+outlier_samples <- ISAoutliers$iac_outlier_samples
+cat(" number of outlier samples =", length(outlier_samples),"/",dim(eset_bg)["Samples"],"=",length(outlier_samples)/dim(eset_bg)["Samples"],"\r","\n")
+
+save(outlier_samples, file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_0.SampleNetwork_outlier_samples.RData",sep="") )
+
+# print outlier samples
+ISAoutliers$iac_outlier_samples
+
+# read in stats and lok=oksee
+outlier_stats <- read.table(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_0.group.basic_sampleNetworkIterate_summary.csv",sep=""),sep=",",head=T)
+outlier_stats[,1:8]
+
+# get pdata for outliers
+SampleNetWork_outliers <- pData(eset_bg_log2_rsn_0[,outlier_samples])
+n_unique_study_id_outliers <- length(unique(SampleNetWork_outliers$Study_ID))
+
+# flag and save
+pData(eset_bg_log2_rsn_0)$SampleNetWork_outlier <- pData(eset_bg_log2_rsn_0)$sampleID %in% ISAoutliers$iac_outlier_samples
+save(eset_bg_log2_rsn_0, file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn.RData",sep="")  , compress=T)
+```
+
+*****
+
+Remove SampleNetWork outlier samples 
+=======================================
+```{r remove_SampleNetwork_outliers, eval=TRUE}
+# remove outlier_samples
+eset_bg_log2_rsn <- removeSamples_eset_lumi(eset=eset_bg_log2_rsn_0,sampleRemove=outlier_samples)
+eset_bg_log2_rsn
+str(eset_bg_log2_rsn)
+# save 
+save(eset_bg_log2_rsn, file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn.RData",sep="")  , compress=T)
+```
+
+```{r write_expression_files_eset_bg_log2_rsn_post_sampleNetwork, eval=TRUE}
+# write_expression_files
+write_expression_files(eset=eset_bg_log2_rsn,outfile= paste(out_dir,"/",project_name,".eset_bg_log2_rsn",sep="") )
+```
+
+QC Plots of Transformed and Normalised data after outlier removal `eset_bg_log2_rsn`
+------------------------------------------------------------------------------------
+
+## basic_qc_plot_lumi eset_bg_log2_rsn
+```{r basic_qc_plot_lumi_eset_bg_log2_rsn, fig.height=7, fig.width=10,eval=TRUE}
+# basic plots
+# plot to screen
+basic_qc_plot_lumi(eset_bg_log2_rsn)
+par(def.par)
+
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn.basic_qc_plot_lumi.pdf",sep=""),width=11,height=8)
+basic_qc_plot_lumi(eset_bg_log2_rsn)
+dev.off()
+par(def.par)
+```
+
+## coloured_dendrogram_lumi eset_bg_log2_rsn
+```{r coloured_dendrogram_lumi_eset_bg_log2_rsn, fig.height=7, fig.width=10,eval=TRUE}
+# coloured_dendrogram_lumi
+# plot to screen
+coloured_dendrogram_lumi(eset_bg_log2_rsn)
+par(def.par)
+
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn.coloured_dendrogram_lumi.pdf",sep=""),width=11,height=8)
+coloured_dendrogram_lumi(eset_bg_log2_rsn)
+dev.off()
+par(def.par)
+
+```
+
+## pca_plot_lumi eset_bg_log2_rsn
+```{r pca_plot_lumi_eset_bg_log2_rsn, fig.height=7, fig.width=7,eval=TRUE}
+# PCA plots
+# plot to screen
+pca_plot_lumi(eset_bg_log2_rsn)
+par(def.par)
+
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn.pca_plot_lumi.pdf",sep=""),width=7,height=7)
+pca_plot_lumi(eset_bg_log2_rsn)
+dev.off()
+par(def.par)
+```
+
+## SampleNetwork Plots eset_bg_log2_rsn
+```{r sampleNetwork_plot_all_lumi_eset_bg_log2_rsn, fig.height=10, fig.width=10,eval=TRUE}
+# SampleNetwork Plots
+# plot to screen
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn, colBy="chip");
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn, colBy="group");
+par(def.par)
+
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn.sampleNetwork_plot_all_lumi.pdf",sep=""),width=8,height=8)
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn, colBy="chip");
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn, colBy="group");
+dev.off()
+par(def.par)
+```

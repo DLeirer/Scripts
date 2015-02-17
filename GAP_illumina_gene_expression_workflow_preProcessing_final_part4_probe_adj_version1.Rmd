@@ -1,0 +1,739 @@
+---
+title: "GAP_GX_rlm"
+author: "Daniel Leirer"
+date: "07/01/2015"
+output: html_document
+---
+
+PCA Batch Regressions
+======================
+making this a requirement ie if [tech_pheno_file] exits then test for assoc of with PC1 and batches etc
+
+
+## 0. Load Relevant Data
+
+
+## 1. Set up data for batch regressions
+```{r start_PCA_Batch_Regressions, eval=TRUE}
+# a little fix/renaming
+eset_lumiN <- eset_bg_log2_rsn 
+cat(" Starting batch versus PC1 and PHENOTYPE Rregressions [PC1 ~ batch_var]","\r")
+cat(" Getting Gene expression matrix ","\r")
+gx <- exprs(eset_lumiN)
+gx <- t(gx)
+cat(" Reading in technical information on eg [Sample.ID, RIN, RNA_YIELD, BATCH, CHIP, DATE_CHIP_RUN, DATE_RNA_EXTRACTED] ",tech_pheno_file ,"\r")
+tech_pheno <- read.table(paste(tech_pheno_file),head=TRUE,sep=" ") ## Sample.ID,RIN,RNA_YIELD,BATCH,CHIP, DATE_CHIP_RUN,DATE_RNA_EXTRACTED
+str(tech_pheno)
+tech_pheno$Sentrix.Barcode <- as.factor(tech_pheno$Sentrix.Barcode)
+pdata <- pData(eset_lumiN)
+pdata <- as.data.frame(pdata[,c("sampleID","Index")])
+colnames(pdata) <- c("sampleID","Index")
+tech_batch <- merge( pdata, tech_pheno, by.x="sampleID", by.y="Sample.ID", sort=FALSE, all.x=TRUE)
+tech_batch <- tech_batch[order(tech_batch$Index),]
+tech_batch <- tech_batch[,3:dim(tech_batch)[2]]
+head(tech_batch)
+str(tech_batch)
+# get names of var
+cat(" get names of var ","\r")
+batch_var_names <- names(tech_batch)
+date_vars <- grep("Date",batch_var_names) # which ones are dates
+batch_var_names
+## Run PCA
+cat(" Running PCA on t(exprs(eset)) ","\r")
+pca_gx <- prcomp(gx)$x
+pca_gx <- pca_gx[,"PC1"]
+# PHENOTYPES FOR REGRESSIONS
+cat(" setting up phenotypes PC1,PHENOTYPE & GROUPS for regressions ","\r")
+PC1 <- as.numeric(pca_gx)
+PHENOTYPE <- as.numeric(as.factor(toupper(pData(eset_lumiN)$PHENOTYPE))) # toupper() called because of pesky 'case' issues
+GROUPS <-    as.numeric(as.factor(toupper(pData(eset_lumiN)$GROUPS))) # toupper() called because of pesky 'case' issues
+#
+#df <- cbind(tech_batch,PC1,PHENOTYPE,GROUPS)
+#df_z <- apply(df,2,as.factor)
+#df_z <- apply(df_z,2,as.numeric)
+str(pca_gx)
+
+
+```
+
+## 2. multivariate model
+```{r multivariate_model_PCA_Batch_Regressions, eval=TRUE}
+# Test for association of batch vars with PC1
+# multivariate full model
+multivariate_model_terms <- as.formula(paste("PC1 ~ ", paste(batch_var_names ,collapse="+")))
+#########################
+# PC1 is run last 
+
+
+## Doing rlm
+
+## Step 0 : Load Roboustbase
+library(robustbase)
+
+## Step 1 : fit the full model
+
+# Drop empty factor levels by saving and loading.
+
+str(tech_batch)
+table(tech_batch$Sentrix.Barcode)
+
+write.table(tech_batch, file=paste(out_dir,"/",project_name,".tech_batch_factor_clear.txt",sep=""),sep="\t")
+tech_batch4 <- read.table(file=paste(out_dir,"/",project_name,".tech_batch_factor_clear.txt",sep=""), sep="\t")
+str(tech_batch4)
+
+tech_batch4$Sentrix.Barcode <- as.factor(tech_batch4$Sentrix.Barcode)
+tech_batch4$SampleSection <- as.factor(tech_batch4$SampleSection)
+
+robust_m1  <- lmrob(PC1 ~ RIN + Sentrix.Barcode + SampleSection + Date_out + Batch  + person + Conc_Nanodrop + labelled_cRNA_Yield + concentration_of_labelled_cRNA + Date_extraction + Date_Quantitation_by_RiboGreen + Date_labelled_cRNA + Date_cRNApurification + Date_Dilutionand_Amplification, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+robust_m1  <- lmrob(PC1 ~ Sentrix.Barcode, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+linear_m1  <- lm(PC1 ~ RIN + Sentrix.Barcode + SampleSection + Date_out + Batch  + person + Conc_Nanodrop + labelled_cRNA_Yield + concentration_of_labelled_cRNA + Date_extraction + Date_Quantitation_by_RiboGreen + Date_labelled_cRNA + Date_cRNApurification + Date_Dilutionand_Amplification, data=tech_batch4)
+
+## Step 2: See whats significant at t< +/- 1.96
+
+
+summary(robust_m1)
+summary(linear_m1)
+anova(linear_m1)
+
+## Step 3 : Remove non sig terms and re-fit the model (using update() funnction)
+str(tech_batch4)
+
+robust_m2  <- lmrob(PC1 ~ Sentrix.Barcode + Date_out + Conc_Nanodrop + Date_extraction + labelled_cRNA_Yield, data=tech_batch4, control = lmrob.control(setting = "KS2014")) ## both labelled_cRNA_Yield and concentration_of_labelled_cRNA are significant term (1.43e-07 and 1.43e-07) 
+
+
+summary(robust_m2)
+
+
+
+## repeat until all terms are significant
+## final list of covar is what we use in batch regressions
+## the AIM is to find which batch variables are associated with PC1. 
+
+
+```
+
+Batch Correction using linear models
+=====================================
+```{r linear_model_batch_correction_prep, eval=TRUE}
+
+
+
+####
+if(pheno!="PC1") stop(" WARNING!: model terms are not from the PC1 ~ batch regressions" )
+
+# get gene expressuion
+gx <- exprs(eset_bg_log2_rsn)
+n_probes <- dim(gx)[1]
+gx <- t(gx)
+dim(gx)
+gx[1:10,1:10]
+
+# probe nuID names
+new_probe_names <- paste("p_",colnames(gx),sep="") # ADD p as some nuID start with a number
+##test_new_probe_names <- new_probe_names [1:5]
+head(new_probe_names)
+#probe_names <- colnames(gx)
+head(new_probe_names)
+colnames(gx) <- new_probe_names
+gx[1:10,1:10]
+
+# make new matrix to write adjusted values to
+adj_gx <- gx*0
+adj_gx[1:10,1:10]
+##test_adj_gx<- adj_gx[1:10,1:5]
+##test_adj_gx
+# get batch phenos
+##batch_pheno <- tech_batch[,anova_data$terms] ##Can't create batch_pheno do not have anova_data. anova_data$terms is simply the significant variables
+
+##batch_pheno2 <- tech_batch4[,c("Sentrix.Barcode", "Date_out", "Conc_Nanodrop", "Date_extraction", "labelled_cRNA_Yield")]
+##batch_pheno2 <- cbind(batch_pheno2,gx)
+# this is the data for the regression
+batch_pheno2[1:10,1:10]
+##str(batch_pheno2)
+#
+eset_bg_log2_rsn_regression_input <- batch_pheno2
+
+save(eset_bg_log2_rsn_regression_input,file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn.regression_input.RData",sep=""))
+
+##test_batch_pheno2 <- batch_pheno2[1:10,1:10]
+
+##write.table(test_batch_pheno2,file=paste(out_dir,"/",project_name,".test_batch_pheno2.txt",sep=""))
+##test_batch_pheno2 <- read.table("GAP_DL_FINAL.test_batch_pheno2.txt",head=TRUE,sep="")
+
+##str(test_batch_pheno2)
+##test_batch_pheno2
+##table(test_batch_pheno2$Sentrix.Barcode)
+
+
+```
+
+## THIS IS THE ALTERNATIVE TO LINEAR AND ROBUST LINEAR REGGRESSIONS USING COMBAT (use tech_batch4)
+```{r COMBAT, eval=TRUE}
+####################### START HERE #################################
+
+
+## Step 0 : Load Roboustbase, ComBat and tech_batch4. (also make sure all relevant covariates are factors)
+library(robustbase)
+library(sva)
+
+
+
+## Step 1 : Adjust for Sentrix.Barcode
+
+#### Step 1.1 : define batch, model matrix and invert expression data matrix 
+
+gx_t <- t(gx)
+
+gx [1:10,1:10]
+gx_t [1:10,1:10]
+
+batchSB <- tech_batch4$Sentrix.Barcode
+modcombat3 <- model.matrix(~1, data=tech_batch4) 
+
+
+#### Step 1.2 : Run ComBat
+
+combat_edata_2 <- ComBat(dat=gx_t, batch=batchSB, mod=modcombat3, numCovs=NULL, par.prior=TRUE, prior.plots=FALSE)
+
+combat_edata_2 [1:10,1:10]
+
+#### Step 1.3 : Generate Princple Components of ComBat adjusted expression matrix
+combat_edata_2 <- t(combat_edata_2)
+pca_combat_edata_2 <- prcomp(combat_edata_2)$x
+pca_combat_edata_2 <- pca_combat_edata_2[,"PC1"]
+str(pca_combat_edata_2)
+str(pca_gx)
+
+PC1_SB <- as.numeric(pca_combat_edata_2)
+
+
+#### Step 1.4 : Check is Sentrix Barcode is still associated with the new PC1. Then check if anything in the full model is associated. Then check if anything in the reduced model only containing the previously significant covariates is still significant. 
+
+robust_m1_SB  <- lmrob(PC1_SB ~ Sentrix.Barcode, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+summary(robust_m1_SB) ## No significant
+
+robust_m1_SB  <- lmrob(PC1_SB ~ RIN + Sentrix.Barcode + SampleSection + Date_out + Batch  + person + Conc_Nanodrop + labelled_cRNA_Yield + concentration_of_labelled_cRNA + Date_extraction + Date_Quantitation_by_RiboGreen + Date_labelled_cRNA + Date_cRNApurification + Date_Dilutionand_Amplification, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+summary(robust_m1_SB) ## The following are significant here : Sentrix.Barcode, Date_out, Conc_nanodrop, Date_extraction
+str(tech_batch4)
+
+robust_m1_SB  <- lmrob(PC1_SB ~ Sentrix.Barcode + Date_out + Conc_Nanodrop + Date_extraction + concentration_of_labelled_cRNA, data=tech_batch4, control = lmrob.control(setting = "KS2014")) ## both labelled_cRNA_Yield and concentration_of_labelled_cRNA are significant terms (1.43e-07 and 1.43e-07). Probably interchangable 
+
+summary(robust_m1_SB) ## All
+
+robust_m1_SB  <- lm(PC1_SB ~ Sentrix.Barcode + Date_out + Conc_Nanodrop + Date_extraction + concentration_of_labelled_cRNA, data=tech_batch4) ## both labelled_cRNA_Yield and concentration_of_labelled_cRNA are significant terms (1.43e-07 and 1.43e-07). Probably interchangable 
+
+anova(robust_m1_SB)
+
+
+######################################### Step 2 ##########################################
+
+## Step 2 : Adjust for Date_out
+
+#### Step 2.1 : define batch, model matrix and invert expression data matrix 
+
+combat_edata_2_t <- t(combat_edata_2)
+
+combat_edata_2 [1:10,1:10]
+combat_edata_2_t [1:10,1:10]
+
+batchDO <- tech_batch4$Date_out
+modcombat <- model.matrix(~1, data=tech_batch4) 
+str(batchDO)
+
+#### Step 2.2 : Run ComBat
+
+combat_edata_DO <- ComBat(dat=combat_edata_2_t, batch=batchDO, mod=modcombat, numCovs=NULL, par.prior=TRUE, prior.plots=FALSE)
+
+combat_edata_DO [1:10,1:10]
+
+#### Step 2.3 : Generate Princple Components of ComBat adjusted expression matrix
+combat_edata_DO <- t(combat_edata_DO)
+pca_combat_edata_DO <- prcomp(combat_edata_DO)$x
+pca_combat_edata_DO <- pca_combat_edata_DO[,"PC1"]
+str(pca_combat_edata_DO)
+str(pca_combat_edata_2)
+str(pca_gx)
+
+PC1_DO <- as.numeric(pca_combat_edata_DO)
+
+
+#### Step 2.4 : Check is Sentrix Barcode is still associated with the new PC1. Then check if anything in the full model is associated. Then check if anything in the reduced model only containing the previously significant covariates is still significant. 
+
+robust_m1_DO  <- lmrob(PC1_DO ~ Date_out, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+summary(robust_m1_DO) ## No significant
+
+robust_m1_DO  <- lmrob(PC1_DO ~ RIN + Sentrix.Barcode + SampleSection + Date_out + Batch  + person + Conc_Nanodrop + labelled_cRNA_Yield + concentration_of_labelled_cRNA + Date_extraction + Date_Quantitation_by_RiboGreen + Date_labelled_cRNA + Date_cRNApurification + Date_Dilutionand_Amplification, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+summary(robust_m1_DO) ## The following are significant here : Sentrix.Barcode, Conc_nanodrop, Date_extraction
+str(tech_batch4)
+
+robust_m1_DO  <- lmrob(PC1_DO ~ Sentrix.Barcode + Date_out + Conc_Nanodrop + Date_extraction + labelled_cRNA_Yield, data=tech_batch4, control = lmrob.control(setting = "KS2014")) ## both labelled_cRNA_Yield and concentration_of_labelled_cRNA are significant terms (1.43e-07 and 1.43e-07). Probably interchangable 
+
+robust_m1_DO  <- lm(PC1_DO ~ Sentrix.Barcode + Date_out + Conc_Nanodrop + Date_extraction + labelled_cRNA_Yield, data=tech_batch4)
+
+summary(robust_m1_DO) ## The following are significant here : Intercept, Date_out, Conc_nanodrop, Date_extraction, concentration_of_labelled_cRNA, labelled_cRNA_Yield
+anova(robust_m1_DO)
+
+######################################### Step 3 ##########################################
+
+## Step 3 : Adjust for Date_extraction
+
+#### Step 3.1 : define batch, model matrix and invert expression data matrix 
+
+combat_edata_DO_t <- t(combat_edata_DO)
+
+combat_edata_DO [1:10,1:10]
+combat_edata_DO_t [1:10,1:10]
+
+batchDE <- tech_batch4$Date_extraction
+modcombat <- model.matrix(~1, data=tech_batch4) 
+str(batchDE)
+
+#### Step 3.2 : Run ComBat
+
+combat_edata_DE <- ComBat(dat=combat_edata_DO_t, batch=batchDE, mod=modcombat, numCovs=NULL, par.prior=TRUE, prior.plots=FALSE)
+
+combat_edata_DE [1:10,1:10]
+
+#### Step 3.3 : Generate Princple Components of ComBat adjusted expression matrix
+combat_edata_DE <- t(combat_edata_DE)
+pca_combat_edata_DE <- prcomp(combat_edata_DE)$x
+pca_combat_edata_DE <- pca_combat_edata_DE[,"PC1"]
+str(pca_combat_edata_DE)
+str(pca_combat_edata_DO)
+str(pca_combat_edata_2)
+str(pca_gx)
+
+PC1_DE <- as.numeric(pca_combat_edata_DE)
+
+
+#### Step 3.4 : Check is Sentrix Barcode is still associated with the new PC1. Then check if anything in the full model is associated. Then check if anything in the reduced model only containing the previously significant covariates is still significant. 
+
+robust_m1_DE  <- lmrob(PC1_DE ~ Date_extraction, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+summary(robust_m1_DE) ## No significant
+
+robust_m1_DE  <- lmrob(PC1_DE ~ Sentrix.Barcode + Date_out + Date_extraction, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+summary(robust_m1_DE) ## No significant
+
+
+
+robust_m1_DE  <- lmrob(PC1_DE ~ RIN + Sentrix.Barcode + SampleSection + Date_out + Batch  + person + Conc_Nanodrop + labelled_cRNA_Yield + concentration_of_labelled_cRNA + Date_extraction + Date_Quantitation_by_RiboGreen + Date_labelled_cRNA + Date_cRNApurification + Date_Dilutionand_Amplification, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+summary(robust_m1_DE) ## The following are significant here : Sentrix.Barcode, Conc_nanodrop
+
+
+robust_m1_DE  <- lmrob(PC1_DE ~ Sentrix.Barcode + Date_out + Conc_Nanodrop + Date_extraction + concentration_of_labelled_cRNA, data=tech_batch4, control = lmrob.control(setting = "KS2014")) ## both labelled_cRNA_Yield and concentration_of_labelled_cRNA are significant terms (1.43e-07 and 1.43e-07). Probably interchangable 
+
+robust_m1_DE  <- lmrob(PC1_DE ~ Sentrix.Barcode + Date_out + Conc_Nanodrop + Date_extraction + concentration_of_labelled_cRNA, data=tech_batch4, control = lmrob.control(setting = "KS2014")) ## both labelled_cRNA_Yield and concentration_of_labelled_cRNA are significant terms (1.43e-07 and 1.43e-07). Probably interchangable 
+
+robust_m1_DE  <- lmrob(PC1_DE ~ Conc_Nanodrop + concentration_of_labelled_cRNA, data=tech_batch4, control = lmrob.control(setting = "KS2014")) ## both labelled_cRNA_Yield and concentration_of_labelled_cRNA are significant terms (1.43e-07 and 1.43e-07). Probably interchangable 
+
+cor.test (tech_batch4$Conc_Nanodrop, tech_batch4$concentration_of_labelled_cRNA)
+plot(tech_batch4$Conc_Nanodrop, tech_batch4$concentration_of_labelled_cRNA)
+
+summary(robust_m1_DE) ## The following are significant here : Intercept, Date_out, Conc_nanodrop, concentration_of_labelled_cRNA, labelled_cRNA_Yield
+
+linear_m1_DE  <- lm(PC1_DE ~ RIN + Sentrix.Barcode + SampleSection + Date_out + Batch  + person + Conc_Nanodrop + labelled_cRNA_Yield + concentration_of_labelled_cRNA + Date_extraction + Date_Quantitation_by_RiboGreen + Date_labelled_cRNA + Date_cRNApurification + Date_Dilutionand_Amplification, data=tech_batch4,)
+
+summary(linear_m1_DE) ## The following are significant here : Sentrix.Barcode, Conc_nanodrop
+anova(linear_m1_DE)
+
+
+```
+
+
+
+## SET UP FOR ROBOUST LINEAR REGRESSION
+```{r linear_model_batch_correction_prep, eval=TRUE}
+
+
+
+####
+if(pheno!="PC1") stop(" WARNING!: model terms are not from the PC1 ~ batch regressions" )
+
+# get gene expressuion
+gx <- exprs(eset_bg_log2_rsn)
+n_probes <- dim(gx)[1]
+gx <- t(gx)
+dim(gx)
+gx[1:10,1:10]
+
+combat_edata_DE_t <- t(combat_edata_DE) ## From Sentrix.Barcode, Date_out and Date_extraction ComBat corrected 
+combat_edata_DE_t [1:10,1:10]
+
+# probe nuID names
+##new_probe_names <- paste("p_",colnames(combat_edata_DE_t),sep="") # ADD p as some nuID start with a number
+
+#probe_names <- colnames(gx)
+head(new_probe_names)
+colnames(combat_edata_DE) <- new_probe_names
+combat_edata_DE[1:10,1:10]
+
+# make new matrix to write adjusted values to
+adj_gx <- combat_edata_DE*0
+adj_gx[1:10,1:10]
+
+
+batch_pheno_C <- tech_batch4[,c( "Conc_Nanodrop", "concentration_of_labelled_cRNA")]
+batch_pheno_C <- cbind(batch_pheno_C,combat_edata_DE)
+# this is the data for the regression
+batch_pheno_C[1:10,1:10]
+str(batch_pheno_C)
+#
+eset_bg_log2_rsn_regression_input_combat_adj <- batch_pheno_C
+
+save(eset_bg_log2_rsn_regression_input_combat_adj,file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn.regression_input_combat_adj.RData",sep=""))
+
+
+```
+
+## THIS ROBOUST LINEAR REGRESSION FOR THE FULL DATA AFTER SIGNIFICANT FACTORIAL BATCHES HAVE BEEN ELIMINATED. IT WILL LIEKLY TAKE HOURS TO PROCESS (approx 5.5 hours)
+## (covariates left are Conc_Nanodrop and either labelled_cRNA_Yield or concentration_of_labelled_cRNA. concentration_of_labelled_cRNA will be used)
+
+```{r linear_model_batch_correction_run, eval=TRUE}
+# loop through each probe and adjust for sig batches
+pn <- 1
+#
+for(probe in new_probe_names){
+    
+
+    rlm_model <- as.formula( paste(probe,"~","Conc_Nanodrop + concentration_of_labelled_cRNA",sep="") )
+    rlm_probe  <- lmrob(rlm_model, data=batch_pheno_C, control = lmrob.control(setting = "KS2014")) ##Probe instead of PC1 right??? summary(rlm_probe)
+  
+    rsq <- round( summary(rlm_probe)$adj.r.squared, 3)   
+    residual_probe <- rlm_probe$residual 
+    
+    mean_probe_level <- mean(batch_pheno_C[,probe])
+    
+    adjusted_probe_level <- residual_probe + mean_probe_level
+    
+    adj_gx[,probe] <- adjusted_probe_level
+    
+   ### cat("  Progress: ",pn," : ",round(pn/n_probes,3),"\r")
+    
+    sink(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn.rlm_probe_progress_rsq_combat_adj.txt",sep=""),append=TRUE) ##changed lm to rlm
+    
+    cat(" doing [",probe ,"] ~ [","Conc_Nanodrop + concentration_of_labelled_cRNA","].RSQ=",rsq,". Progress:",round(pn/n_probes,3),"\r","\n")
+    
+    sink()
+        
+    pn <- pn + 1
+
+    }
+
+
+
+
+# update names and transform back to probe x sample matrix
+adj_gx <- t(adj_gx)
+rownames(adj_gx) <- rownames(exprs(eset_bg_log2_rsn))
+adj_gx[1:10,1:10]
+
+# save raw matrix
+eset_bg_log2_rsn_adj_gx_combat_adj <- adj_gx
+save(eset_bg_log2_rsn_adj_gx_combat_adj,file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_adj_gx_combat_adj.RData",sep=""))
+
+```
+
+
+
+##  CHECK IF eset_bg_log2_rsn_adj_gx_combat_adj STILL HAS SIGNIFICANT ASSOCIATIONS 
+```{r, eval=TRUE}
+
+#### Step 1 : Generate Princple Components of ComBat adjusted expression matrix
+eset_bg_log2_rsn_adj_gx_combat_adj_t <- t(eset_bg_log2_rsn_adj_gx_combat_adj)
+eset_bg_log2_rsn_adj_gx_combat_adj_t <- prcomp(eset_bg_log2_rsn_adj_gx_combat_adj_t)$x
+pca_eset_bg_log2_rsn_adj_gx_combat_adj_t <- eset_bg_log2_rsn_adj_gx_combat_adj_t[,"PC1"]
+str(pca_eset_bg_log2_rsn_adj_gx_combat_adj_t)
+str(pca_combat_edata_DE)
+str(pca_combat_edata_DO)
+str(pca_combat_edata_2)
+str(pca_gx)
+
+PC1_CAF <- as.numeric(pca_eset_bg_log2_rsn_adj_gx_combat_adj_t) ##COMBAT ADJUSTED FINAL
+
+
+#### Step 2 : Check if Conc_Nanodrop + concentration_of_labelled_cRNA are still associated with the new PC1. Then check if anything in the full model is associated. Then check if anything in the reduced model only containing the previously significant covariates is still significant. 
+
+
+
+
+
+robust_m1_CAF  <- lmrob(PC1_CAF ~ RIN + Sentrix.Barcode + SampleSection + Date_out + Batch  + person + Conc_Nanodrop + labelled_cRNA_Yield + concentration_of_labelled_cRNA + Date_extraction + Date_Quantitation_by_RiboGreen + Date_labelled_cRNA + Date_cRNApurification + Date_Dilutionand_Amplification, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+
+
+robust_m1_CAF  <- lmrob(PC1_CAF ~ RIN + Sentrix.Barcode + SampleSection + Date_out + Batch  + person + Conc_Nanodrop + concentration_of_labelled_cRNA + Date_extraction + Date_Quantitation_by_RiboGreen + Date_labelled_cRNA + Date_cRNApurification + Date_Dilutionand_Amplification, data=tech_batch4, control = lmrob.control(setting = "KS2014"))
+
+summary(robust_m1_CAF) ## The following are significant here : Sentrix.Barcode
+
+
+robust_m1_CAF  <- lmrob(PC1_CAF ~ Sentrix.Barcode + Date_out + Conc_Nanodrop + Date_extraction + concentration_of_labelled_cRNA, data=tech_batch4, control = lmrob.control(setting = "KS2014")) ## both labelled_cRNA_Yield and concentration_of_labelled_cRNA are significant terms (1.43e-07 and 1.43e-07). Probably interchangable 
+
+summary(robust_m1_CAF) ## The following are significant here : Date_out, concentration_of_labelled_cRNA
+
+
+
+linear_m1_CAF  <- lm(PC1_CAF ~ RIN + Sentrix.Barcode + SampleSection + Date_out + Batch  + person + Conc_Nanodrop + labelled_cRNA_Yield + concentration_of_labelled_cRNA + Date_extraction + Date_Quantitation_by_RiboGreen + Date_labelled_cRNA + Date_cRNApurification + Date_Dilutionand_Amplification, data=tech_batch4,)
+
+summary(linear_m1_CAF) ## The following are significant here : Sentrix.Barcode
+anova(linear_m1_CAF) ## The following are significant here Batch, labelled_cRNA_Yield
+
+
+```
+
+
+## CHECK eset_bg_log2_rsn_adj_gx_combat_adj HAS COMPLETE MATRIX. ALSO CHECK BY SVA IF ANY HIDDEN VARIABLES
+```{r , eval=TRUE}
+
+load("GAP_DL_FINAL.eset_bg_log2_rsn_adj_gx_combat_adj.RData")
+
+dim(eset_bg_log2_rsn_adj_gx_combat_adj)
+eset_bg_log2_rsn_adj_gx_combat_adj [47220:47231,480:487]
+
+## SVA
+
+eset_lumiN <- eset_bg_log2_rsn 
+gx <- exprs(eset_lumiN)
+gx <- t(gx)
+gx_t = t(gx) 
+
+pheno_data <- pData(eset_bg_log2_rsn_adj)
+str(pheno_data)
+
+edata_o =  gx_t
+edata = eset_bg_log2_rsn_adj_gx_combat_adj
+
+
+edata [1:10,1:10]
+
+mod = model.matrix(~as.factor(GROUPS), data=pheno_data)
+
+n.sv_o = num.sv(edata_o,mod,method="be")
+n.sv_o ## Using be 39 using leek 0
+n.sv = num.sv(edata,mod,method="be")
+n.sv ## Using be 54 Using leek 0
+
+```
+
+Make Batch Adjusted Data Set
+=================================================
+
+```{r make_batch_adjusted_data, eval=TRUE}
+# make new eset and replace exprs() matrix with new batch adjusted data
+eset_bg_log2_rsn_adj <- eset_bg_log2_rsn
+exprs(eset_bg_log2_rsn_adj) <- eset_bg_log2_rsn_adj_gx_combat_adj
+str(eset_bg_log2_rsn_adj)
+
+```
+
+```{r save_batch_adjusted_data, eval=TRUE}
+# save eset_bg_log2_rsn_adj
+save(eset_bg_log2_rsn_adj, file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_adj.RData",sep="")  , compress=T)
+```
+
+```{r write_expression_files_batch_adjusted_data, eval=TRUE}
+# write_expression_files eset_bg_log2_rsn_adj
+write_expression_files(eset=eset_bg_log2_rsn_adj,outfile= paste(out_dir,"/",project_name,".eset_bg_log2_rsn_adj",sep="") )
+```
+
+
+QC Plots of `eset_bg_log2_rsn_adj`
+---------------------------------------------------------------
+## basic_qc_plot_lumi 
+```{r basic_qc_plot_lumi_eset_bg_log2_rsn_adj, fig.height=7, fig.width=10,eval=TRUE}
+# basic plots
+# plot to screen
+
+
+basic_qc_plot_lumi(eset_bg_log2_rsn_adj)
+par(def.par)
+```
+
+```{r basic_qc_plot_lumi_eset_bg_log2_rsn_adj_pdf, echo=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_adj.basic_qc_plot_lumi.pdf",sep=""),width=11,height=8)
+basic_qc_plot_lumi(eset_bg_log2_rsn_adj)
+dev.off()
+par(def.par)
+
+```
+
+## coloured_dendrogram_lumi 
+```{r coloured_dendrogram_lumi_eset_bg_log2_rsn_adj, fig.height=7, fig.width=10,eval=TRUE}
+# coloured_dendrogram_lumi
+# plot to screen
+par(c=5,20,5,5)
+coloured_dendrogram_lumi(eset_bg_log2_rsn_adj)
+par(def.par)
+```
+
+```{r coloured_dendrogram_lumi_eset_bg_log2_rsn_adj_pdf,eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_adj.coloured_dendrogram_lumi.pdf",sep=""),width=11,height=8)
+coloured_dendrogram_lumi(eset_bg_log2_rsn_adj)
+dev.off()
+par(def.par)
+
+```
+
+## pca_plot_lumi 
+```{r pca_plot_lumi_eset_bg_log2_rsn_adj, fig.height=7, fig.width=7,eval=TRUE}
+# PCA plots
+# plot to screen
+pca_plot_lumi(eset_bg_log2_rsn_adj)
+par(def.par)
+```
+
+```{r pca_plot_lumi_eset_bg_log2_rsn_adj_pdf, eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_adj.pca_plot_lumi.pdf",sep=""),width=7,height=7)
+pca_plot_lumi(eset_bg_log2_rsn_adj)
+dev.off()
+```
+## SampleNetwork Plots eset_bg_log2_rsn_adj
+```{r sampleNetwork_plot_all_lumi_eset_bg_log2_rsn_adj, fig.height=10, fig.width=10,eval=TRUE}
+# SampleNetwork Plots
+# plot to screen
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn_adj, colBy="chip");
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn_adj, colBy="group");
+par(def.par)
+```
+
+```{r sampleNetwork_plot_all_lumi_eset_bg_log2_rsn_adj_pdf, eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_bg_log2_rsn_adj.sampleNetwork_plot_all_lumi.pdf",sep=""),width=8,height=8)
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn_adj, colBy="chip");
+sampleNetwork_plot_all_lumi(eset_bg_log2_rsn_adj, colBy="group");
+dev.off()
+```
+
+
+****
+
+Create Final QC'd Expression data set: Good Probes & Good Samples
+==================================================================
+Subset data to good_probes.   
+At this stage we have already removed sample outliers and adjusted for significant batch variables. Now we subset to probes that can be reliably detected in 80% of each GROUP. This is the final data set to be used on all analyses. 
+Some of the QC plot wont look as nice, eg CV plots, as these genes should represent some real biology.
+
+```{r create_final_eset, eval=TRUE}
+# subset to good probes 
+
+
+eset_final <- eset_bg_log2_rsn_adj[good_probes,]
+str(eset_final)
+
+```
+
+```{r save_final_eset, eval=TRUE}
+# subset to good probes 
+save(eset_final, file=paste(out_dir,"/",project_name,".eset_final.RData",sep="")  , compress=T)
+```
+
+```{r write_expression_files_final_eset, eval=TRUE}
+# write_expression_files eset_bg_log2_rsn_adj
+write_expression_files(eset=eset_final,outfile= paste(out_dir,"/",project_name,".eset_final",sep="") )
+```
+
+QC Plots of `eset_final`
+---------------------------------------------------------------
+## basic_qc_plot_lumi 
+```{r basic_qc_plot_lumi_eset_final, fig.height=7, fig.width=10,eval=TRUE}
+# basic plots
+# plot to screen
+basic_qc_plot_lumi(eset_final)
+par(def.par)
+```
+
+```{r basic_qc_plot_lumi_eset_final_pdf, eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_final.basic_qc_plot_lumi.pdf",sep=""),width=11,height=8)
+basic_qc_plot_lumi(eset_final)
+dev.off()
+```
+
+## coloured_dendrogram_lumi 
+```{r coloured_dendrogram_lumi_eset_final, fig.height=7, fig.width=10, eval=TRUE}
+# coloured_dendrogram_lumi
+# plot to screen
+par(mar=c(5,20,5,5))
+coloured_dendrogram_lumi(eset_final)
+par(def.par)
+```
+
+```{r coloured_dendrogram_lumi_eset_final_pdf, eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_final.coloured_dendrogram_lumi.pdf",sep=""),width=11,height=8)
+coloured_dendrogram_lumi(eset_final)
+dev.off()
+```
+
+## pca_plot_lumi 
+```{r pca_plot_lumi_eset_final, fig.height=7, fig.width=7, eval=TRUE}
+# PCA plots
+# plot to screen
+pca_plot_lumi(eset_final)
+par(def.par)
+```
+
+```{r pca_plot_lumi_eset_final_pdf, eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_final.pca_plot_lumi.pdf",sep=""),width=7,height=7)
+pca_plot_lumi(eset_final)
+dev.off()
+```
+
+## SampleNetwork Plots 
+```{r sampleNetwork_plot_all_lumi_eset_final, fig.height=10, fig.width=10,eval=TRUE}
+# SampleNetwork Plots
+# plot to screen
+sampleNetwork_plot_all_lumi(eset_final, colBy="chip");
+sampleNetwork_plot_all_lumi(eset_final, colBy="group");
+par(def.par)
+```
+
+```{r sampleNetwork_plot_all_lumi_eset_final_pdf, eval=TRUE}
+pdf(file=paste(out_dir,"/",project_name,".eset_final.sampleNetwork_plot_all_lumi.pdf",sep=""),width=8,height=8)
+sampleNetwork_plot_all_lumi(eset_final, colBy="chip");
+sampleNetwork_plot_all_lumi(eset_final, colBy="group");
+dev.off()
+```
+
+****
+
+Clean up
+=========
+
+```{r clean_up, eval=TRUE}
+cat(" Clean up processing directory","\r","\n")
+
+cat(" Making data directories","\r","\n")
+system( paste(" mkdir ",out_dir,"/eset_raw",sep=""));
+system( paste(" mkdir ",out_dir,"/eset_bg",sep=""));
+system( paste(" mkdir ",out_dir,"/eset_bg_log2_rsn",sep=""));
+system( paste(" mkdir ",out_dir,"/eset_final",sep=""));
+system( paste(" mkdir ",out_dir,"/XIST_Gender_checks",sep=""));
+system( paste(" mkdir ",out_dir,"/detected_probes",sep=""));
+system( paste(" mkdir ",out_dir,"/SampleNetwork",sep=""));
+system( paste(" mkdir ",out_dir,"/batch_regressions/",sep=""));
+
+cat(" Cleaning up data directories","\r","\n")
+# XIST
+system( paste(" mv -v ",out_dir,"/","*.XIST* ",out_dir,"/XIST_Gender_checks/",sep=""))
+
+# detected probes
+system( paste(" mv -v ",out_dir,"/","*.detected_probes* ",out_dir,"/detected_probes/",sep=""))
+
+# SampleNetwork
+system( paste("  mv -v ",out_dir,"/","*ampleNetwork* ",out_dir,"/SampleNetwork/",sep=""))
+
+# batch regressions multivariate
+system( paste(" mv -v ",out_dir,"/","*multivariate* ",out_dir,"/batch_regressions/",sep=""))
+
+# eset_****
+system( paste(" mv -v ",out_dir,"/","*.eset_raw.* ",out_dir,"/eset_raw/",sep=""))
+system( paste(" mv -v ",out_dir,"/","*.eset_bg.* ",out_dir,"/eset_bg/",sep=""))
+system( paste(" mv -v ",out_dir,"/","*.eset_bg_log2_rsn* ",out_dir,"/eset_bg_log2_rsn/",sep=""))
+system( paste(" mv -v ",out_dir,"/","*.eset_final.* ",out_dir,"/eset_final/",sep=""))
+
+```

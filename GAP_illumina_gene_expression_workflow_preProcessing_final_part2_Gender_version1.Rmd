@@ -1,0 +1,331 @@
+
+****
+Check Gender based on Y Chromosome gene expression
+```{r}
+cat(" Checking Gender based on Y chromosome gene expression","\r","\n")
+
+## get neg control data from eset_bg
+negativeControl <- getControlData(eset_bg)
+negativeControl <- subset(negativeControl, negativeControl$controlType=="NEGATIVE")
+negativeControl <- negativeControl[,c(3:dim(negativeControl)[2])]
+
+## get neg control info mean,sd,max etc
+neg_max <- apply(negativeControl,2,max)
+neg_sd <- apply(negativeControl,2,sd)
+neg_mean <- apply(negativeControl,2,mean)
+neg_2sd <- neg_mean + 2*neg_sd
+
+## get PRKY gene postion
+PRKY_raw <- fData(eset_raw)$ILMN_GENE=="PRKY";
+PRKY_bgcor <- fData(eset_bg)$ILMN_GENE=="PRKY";
+table(PRKY_raw)
+table(PRKY_bgcor)
+
+## get XIST gene expression signal
+PRKY_gx_raw  <- exprs(eset_raw[PRKY_raw, ]  )
+PRKY_gx_raw <- as.data.frame( t(PRKY_gx_raw));
+PRKY_gx_bgcor <- exprs(eset_bg[PRKY_bgcor , ]  )
+PRKY_gx_bgcor <- as.data.frame( t(PRKY_gx_bgcor));
+
+## cobine raw and bkCro gx data
+PRKY_gx <- cbind(PRKY_gx_raw,PRKY_gx_bgcor)
+colnames(PRKY_gx) <- c("raw_PRKY","bgcor_PRKY")
+str(PRKY_gx)
+PRKY_gx$neg_2sd <- neg_2sd
+PRKY_gx$neg_max <- neg_max
+PRKY_gx$neg_mean <- neg_mean
+PRKY_gx$neg_sd <- neg_sd
+
+## gender based on XIST expression 1=FEMALE , 0 = MALE
+#xist_gx$XIST_Gender_max <- ifelse(xist_gx$bgcor_XIST > xist_gx$neg_max,1,0)
+#xist_gx$XIST_Gender_2sd <- ifelse(xist_gx$bgcor_XIST > xist_gx$neg_2sd,1,0)
+PRKY_gx$sry_z <-  ( PRKY_gx$bgcor_PRKY - PRKY_gx$neg_mean ) / PRKY_gx$neg_sd
+PRKY_gx$Sample.ID <- rownames(PRKY_gx)
+
+# illumina detection p value for xist
+PRKY_gx$PRKY_illumina_detection_p <- as.numeric(detection(eset_bg[fData(eset_bg)$ILMN_GENE=="PRKY",]))
+PRKY_gx$PRKY_illumina_detection_p <- ifelse(PRKY_gx$PRKY_illumina_detection_p  == 0.00000, 0.00001,PRKY_gx$PRKY_illumina_detection_p )
+
+
+# gender based on bg cor expression > 2SD negatibe beads
+## xist_gx$xist_gender <- ifelse(xist_gx$bgcor_XIST > xist_gx$neg_2sd,"FEMALE","MALE")
+##sry_gx$sry_gender <- ifelse(sry_gx$bgcor_SRY<=sry_gx$neg_mean, "FEMALE","MALE")
+PRKY_gx$PRKY_gender <- ifelse(PRKY_gx$bgcor_PRKY<=(PRKY_gx$neg_mean*59/170), "FEMALE","MALE") ##this was just arbitarily adjusted based on visuals. 
+str(PRKY_gx)
+
+
+mean(PRKY_gx$bgcor_PRKY)
+mean(PRKY_gx$neg_mean)
+
+PRKY_gx$neg_mean
+PRKY_gx$bgcor_PRKY
+PRKY_gx$PRKY_gender
+
+# gender provided in database
+PRKY_gx$clinical_gender <- pData(eset_bg)$SEX
+
+# gender based on illumina detecetion p value
+PRKY_gx$PRKY_illumina_detection_p_gender <- ifelse(PRKY_gx$PRKY_illumina_detection_p <= 0.01,"MALE","FEMALE") ## 0.05 makes them all FEMALE!
+
+# flag gender FAIL
+PRKY_gx$gender_FAIL <- ifelse(PRKY_gx$PRKY_gender == PRKY_gx$clinical_gender, "PASS","GENDER_FAIL" )
+PRKY_gx$gender_FAIL_illumina_detection_p <- ifelse(PRKY_gx$PRKY_illumina_detection_p_gender == PRKY_gx$clinical_gender, "PASS","GENDER_FAIL" )
+# head
+head(PRKY_gx)
+
+# gender_concordance
+gender_concordance <- round(sum(PRKY_gx$PRKY_gender==PRKY_gx$clinical_gender)/dim(PRKY_gx)[1],3)
+cat(" Gender Concordance=[",gender_concordance,"]","\r","\n")
+
+# table SEX
+table(PRKY_gx$clinical_gender);
+table(PRKY_gx$PRKY_gender);
+table(PRKY_gx$PRKY_illumina_detection_p_gender);
+
+
+# tables SEX compare
+table(PRKY_gx$PRKY_gender, PRKY_gx$clinical_gender);
+table(PRKY_gx$PRKY_illumina_detection_p_gender, PRKY_gx$clinical_gender);
+
+#percent_gender_match
+percent_gender_match <- round(sum(PRKY_gx$PRKY_gender==PRKY_gx$clinical_gender)/dim(PRKY_gx)[1],3)
+cat(" Percent Gender Match=[",percent_gender_match,"]","\r","\n")
+
+# Density plots with semi-transparent fill of SEX CALLS
+df <- PRKY_gx[,c("bgcor_PRKY", "clinical_gender", "PRKY_gender", "PRKY_illumina_detection_p_gender")]
+head(df)
+
+# Find the mean of each group
+# library(plyr)
+cdf_clinical_gender <- ddply(df, "clinical_gender", summarise, mean=mean(log2(bgcor_PRKY)))
+cdf_PRKY_gender <- ddply(df, "PRKY_gender", summarise, mean=mean(log2(bgcor_PRKY)))
+
+cdf_clinical_gender
+cdf_PRKY_gender 
+
+
+# ggplots
+ggplot(df, aes(x=log2(bgcor_PRKY), fill=clinical_gender )) + geom_histogram(binwidth=.5, alpha=.5, position="identity")
+ggplot(df, aes(x=log2(bgcor_PRKY), fill=PRKY_gender )) + geom_histogram(binwidth=.5, alpha=.5, position="identity")
+ggplot(df, aes(x=log2(bgcor_PRKY), fill=sry_illumina_detection_p_gender )) + geom_histogram(binwidth=.5, alpha=.5, position="identity")
+
+
+ggplot(df, aes( y=log2(bgcor_PRKY), x=clinical_gender, fill=clinical_gender)) + geom_boxplot() +  guides(fill=FALSE) + coord_flip()
+ggplot(df, aes( y=log2(bgcor_PRKY), x=PRKY_gender, fill=PRKY_gender)) + geom_boxplot() +  guides(fill=FALSE) + coord_flip()
+#ggplot(df, aes( y=log2(bgcor_XIST), x=xist_illumina_detection_p_gender, fill=xist_illumina_detection_p_gender)) + geom_boxplot() +  guides(fill=FALSE) + coord_flip()
+
+# save xist_gx data
+save(sry_gx, file=paste(out_dir,"/",project_name,".eset_bg.sry.Gender.RData",sep=""))
+write.table(sry_gx, file=paste(out_dir,"/",project_name,".eset_bg.sry.Gender.txt",sep=""),sep="\t",row.names=F)
+
+
+=============================================== DO NOT USE =====================================================
+## check sex and add to pData
+pheno_update <- merge(pData(eset_bg), sry_gx, by.x="sampleID", by.y="Sample.ID",all.x=TRUE,sort=FALSE)
+rownames(pheno_update) <-  pheno_update$sampleID
+
+pData(eset_bg) <- pheno_update
+save(eset_bg, file=paste(out_dir,"/",project_name,".eset_bg.RData",sep=""))
+
+# n_gender_fails
+n_gender_fails <- sum( pData(eset_bg)$gender_FAIL=="GENDER_FAIL" )
+n_unique_study_id_gender_fails <- length(pData(eset_bg)$Study_ID[pData(eset_bg)$gender_FAIL=="GENDER_FAIL"])
+
+if ( n_gender_fails > 0 ) {
+    cat(" WARNING: Youn have GENDER_FAIL samples!!!!!!! N=[",n_gender_fails,"]","\r","\n")
+} else {
+  cat(" Congratulations! \n All your MALEs are MALE and FEMALEs are FEMALE. \n You have NO GENDER_FAIL samples!!!", "\r","\n")
+}
+
+## write file of sex fails
+gender_FAIL_table <- subset(pData(eset_bg),pData(eset_bg)$gender_FAIL=="GENDER_FAIL")
+write.table(gender_FAIL_table, file=paste(out_dir,"/",project_name,".eset_bg.XIST.gender_FAIL_table.txt",sep=""),sep="\t",row.names=F)
+
+pData(eset_bg)$gender_FAIL
+
+## SAVE BACKGROUND CORRECTED DATA sex checked 
+pData(eset_bg)$GROUPS <- toupper(pData(eset_bg)$GROUPS) ## added as an extra check for those pesky "case" issues!
+pData(eset_bg)$PHENOTYPE <- toupper(pData(eset_bg)$PHENOTYPE)
+save(eset_bg, file=paste(out_dir,"/",project_name,".eset_bg.RData",sep="")  , compress=T)
+
+cat(" Writing eset_bg [beadNum, detection, exprs, se.exprs] data to file ", paste(out_dir,"/",project_name,".eset_bg.[beadNum, detection, exprs, se.exprs].txt",sep=""), "\r","\n")
+write_expression_files(eset=eset_bg,outfile= paste(out_dir,"/",project_name,".eset_bg",sep="") )
+
+# save plots to pdf
+pdf(file=paste(out_dir,"/",project_name,".eset_bg.XIST.Gender_plot.pdf",sep=""),height=8,width=11)
+# some plots 
+boxplot( log2(bgcor_XIST) ~ clinical_gender, data=xist_gx, main="bg XIST.gx ~ clinical_gender")
+boxplot( log2(bgcor_XIST) ~ xist_gender, data=xist_gx, main="bg XIST.gx ~ xist_gender")
+boxplot( log2(bgcor_XIST) ~ xist_illumina_detection_p_gender, data=xist_gx, main="bg XIST.gx ~ xist_illumina_detection_p_gende")
+dev.off()
+
+====================================== START AGAIN HERE ==================================================
+```
+
+
+Check Gender based on XIST gene expression
+===========================================
+Uses background corrected data to detemine gender based on XIST gene expression: http://en.wikipedia.org/wiki/XIST_(gene).  
+Samples with XIST probe expression greater than or equal to the mean of the negative bead expression values are flagged as FEMALE.
+Compares XIST based gender with clinical gender, and flags potential problems as GENDER_FAIL. These may be due to database typos and sample mix ups and should be double checked. Thes samples are kept at this stage.
+
+```{r checkGender, fig.height=7, fig.width=7, eval=TRUE}
+cat(" Checking Gender based on XIST gene expression","\r","\n")
+
+## get neg control data from eset_bg
+negativeControl <- getControlData(eset_bg)
+negativeControl <- subset(negativeControl, negativeControl$controlType=="NEGATIVE")
+negativeControl <- negativeControl[,c(3:dim(negativeControl)[2])]
+
+## get neg control info mean,sd,max etc
+neg_max <- apply(negativeControl,2,max)
+neg_sd <- apply(negativeControl,2,sd)
+neg_mean <- apply(negativeControl,2,mean)
+neg_2sd <- neg_mean + 2*neg_sd
+
+## get XIST gene postion
+xist_raw <- fData(eset_raw)$ILMN_GENE=="XIST";
+xist_bgcor <- fData(eset_bg)$ILMN_GENE=="XIST";
+
+## get XIST gene expression signal
+xist_gx_raw  <- exprs(eset_raw[xist_raw, ]  )
+xist_gx_raw <- as.data.frame( t(xist_gx_raw));
+xist_gx_bgcor <- exprs(eset_bg[xist_bgcor , ]  )
+xist_gx_bgcor <- as.data.frame( t(xist_gx_bgcor));
+
+## cobine raw and bkCro gx data
+xist_gx <- cbind(xist_gx_raw,xist_gx_bgcor)
+colnames(xist_gx) <- c("raw_XIST","bgcor_XIST")
+xist_gx$neg_2sd <- neg_2sd
+xist_gx$neg_max <- neg_max
+xist_gx$neg_mean <- neg_mean
+xist_gx$neg_sd <- neg_sd
+
+## gender based on XIST expression 1=FEMALE , 0 = MALE
+#xist_gx$XIST_Gender_max <- ifelse(xist_gx$bgcor_XIST > xist_gx$neg_max,1,0)
+#xist_gx$XIST_Gender_2sd <- ifelse(xist_gx$bgcor_XIST > xist_gx$neg_2sd,1,0)
+xist_gx$XIST_z <-  ( xist_gx$bgcor_XIST - xist_gx$neg_mean ) / xist_gx$neg_sd
+xist_gx$Sample.ID <- rownames(xist_gx)
+
+# illumina detection p value for xist
+xist_gx$xist_illumina_detection_p <- as.numeric(detection(eset_bg[fData(eset_bg)$ILMN_GENE=="XIST",]))
+xist_gx$xist_illumina_detection_p <- ifelse( xist_gx$xist_illumina_detection_p  == 0.00000, 0.00001,xist_gx$xist_illumina_detection_p )
+
+# gender based on bg cor expression > 2SD negatibe beads
+## xist_gx$xist_gender <- ifelse(xist_gx$bgcor_XIST > xist_gx$neg_2sd,"FEMALE","MALE")
+xist_gx$xist_gender <- ifelse(xist_gx$bgcor_XIST>=xist_gx$neg_mean, "FEMALE","MALE")
+
+# gender provided in database
+xist_gx$clinical_gender <- pData(eset_bg)$SEX
+
+# gender based on illumina detecetion p value
+xist_gx$xist_illumina_detection_p_gender <- ifelse(xist_gx$xist_illumina_detection_p <= 0.01,"FEMALE","MALE") ## 0.05 makes them all FEMALE!
+
+# flag gender FAIL
+xist_gx$gender_FAIL <- ifelse( xist_gx$xist_gender == xist_gx$clinical_gender, "PASS","GENDER_FAIL" )
+xist_gx$gender_FAIL_illumina_detection_p <- ifelse( xist_gx$xist_illumina_detection_p_gender == xist_gx$clinical_gender, "PASS","GENDER_FAIL" )
+# head
+head(xist_gx)
+
+# gender_concordance
+gender_concordance <- round(sum(xist_gx$xist_gender==xist_gx$clinical_gender)/dim(xist_gx)[1],3)
+cat(" Gender Concordance=[",gender_concordance,"]","\r","\n")
+
+# table SEX
+table(xist_gx$clinical_gender);
+table(xist_gx$xist_gender);
+table(xist_gx$xist_illumina_detection_p_gender);
+
+# tables SEX compare
+table(xist_gx$xist_gender, xist_gx$clinical_gender);
+table(xist_gx$xist_illumina_detection_p_gender, xist_gx$clinical_gender);
+
+#percent_gender_match
+percent_gender_match <- round(sum(xist_gx$xist_gender==xist_gx$clinical_gender)/dim(xist_gx)[1],3)
+cat(" Percent Gender Match=[",percent_gender_match,"]","\r","\n")
+
+# Density plots with semi-transparent fill of SEX CALLS
+df <- xist_gx[,c("bgcor_XIST", "clinical_gender", "xist_gender", "xist_illumina_detection_p_gender")]
+head(df)
+
+# Find the mean of each group
+# library(plyr)
+cdf_clinical_gender <- ddply(df, "clinical_gender", summarise, mean=mean(log2(bgcor_XIST)))
+cdf_xist_gender <- ddply(df, "xist_gender", summarise, mean=mean(log2(bgcor_XIST)))
+
+cdf_clinical_gender
+cdf_xist_gender 
+
+
+# ggplots
+ggplot(df, aes(x=log2(bgcor_XIST), fill=clinical_gender )) + geom_histogram(binwidth=.5, alpha=.5, position="identity")
+ggplot(df, aes(x=log2(bgcor_XIST), fill=xist_gender )) + geom_histogram(binwidth=.5, alpha=.5, position="identity")
+ggplot(df, aes(x=log2(bgcor_XIST), fill=xist_illumina_detection_p_gender )) + geom_histogram(binwidth=.5, alpha=.5, position="identity")
+
+# Box plots With flipped axes
+ggplot(df, aes( y=log2(bgcor_XIST), x=clinical_gender, fill=clinical_gender)) + geom_boxplot() +  guides(fill=FALSE) + coord_flip()
+ggplot(df, aes( y=log2(bgcor_XIST), x=xist_gender, fill=xist_gender)) + geom_boxplot() +  guides(fill=FALSE) + coord_flip()
+#ggplot(df, aes( y=log2(bgcor_XIST), x=xist_illumina_detection_p_gender, fill=xist_illumina_detection_p_gender)) + geom_boxplot() +  guides(fill=FALSE) + coord_flip()
+
+# save xist_gx data
+save(xist_gx, file=paste(out_dir,"/",project_name,".eset_bg.XIST.Gender.RData",sep=""))
+write.table(xist_gx, file=paste(out_dir,"/",project_name,".eset_bg.XIST.Gender.txt",sep=""),sep="\t",row.names=F)
+
+str(xist_gx)
+
+# Merge PRKY and XIST tables
+
+
+XIST_gx<- read.table(file=paste(out_dir,"/",project_name,".eset_bg.XIST.Gender.txt",sep=""), header=TRUE, sep="\t")
+PRKY_gx<- read.table(file=paste(out_dir,"/",project_name,".eset_bg.sry.Gender.txt",sep=""), header=TRUE, sep="\t")
+
+
+XIST_PRKY_gx <- merge (XIST_gx, PRKY_gx, by="Sample.ID")
+str(XIST_PRKY_gx)
+
+write.table(XIST_PRKY_gx, file=paste(out_dir,"/",project_name,".eset_bg.XIST_PRKY.Gender.txt",sep=""),sep="\t",row.names=F)
+
+XIST_PRKY_GF_gx <- read.table(file=paste(out_dir,"/",project_name,".eset_bg.XIST_PRKY_GF.Gender.csv",sep=""), header=TRUE, sep="\t")
+
+str(XIST_PRKY_GF_gx)
+
+## check sex and add to pData
+pheno_update <- merge(pData(eset_bg), XIST_PRKY_GF_gx, by.x="sampleID", by.y="Sample.ID",all.x=TRUE,sort=FALSE)
+rownames(pheno_update) <-  pheno_update$sampleID
+
+pData(eset_bg) <- pheno_update
+str(eset_bg)
+save(eset_bg, file=paste(out_dir,"/",project_name,".eset_bg.RData",sep=""))
+
+==================================================== BELOW IS NOT USED ======================================================
+# n_gender_fails
+n_gender_fails <- sum( pData(eset_bg)$gender_FAIL=="GENDER_FAIL" )
+n_unique_study_id_gender_fails <- length(pData(eset_bg)$Study_ID[pData(eset_bg)$gender_FAIL=="GENDER_FAIL"])
+
+if ( n_gender_fails > 0 ) {
+    cat(" WARNING: Youn have GENDER_FAIL samples!!!!!!! N=[",n_gender_fails,"]","\r","\n")
+} else {
+  cat(" Congratulations! \n All your MALEs are MALE and FEMALEs are FEMALE. \n You have NO GENDER_FAIL samples!!!", "\r","\n")
+}
+
+## write file of sex fails
+gender_FAIL_table <- subset(pData(eset_bg),pData(eset_bg)$gender_FAIL=="GENDER_FAIL")
+write.table(gender_FAIL_table, file=paste(out_dir,"/",project_name,".eset_bg.XIST.gender_FAIL_table.txt",sep=""),sep="\t",row.names=F)
+
+## SAVE BACKGROUND CORRECTED DATA sex checked 
+pData(eset_bg)$GROUPS <- toupper(pData(eset_bg)$GROUPS) ## added as an extra check for those pesky "case" issues!
+pData(eset_bg)$PHENOTYPE <- toupper(pData(eset_bg)$PHENOTYPE)
+save(eset_bg, file=paste(out_dir,"/",project_name,".eset_bg.RData",sep="")  , compress=T)
+
+cat(" Writing eset_bg [beadNum, detection, exprs, se.exprs] data to file ", paste(out_dir,"/",project_name,".eset_bg.[beadNum, detection, exprs, se.exprs].txt",sep=""), "\r","\n")
+write_expression_files(eset=eset_bg,outfile= paste(out_dir,"/",project_name,".eset_bg",sep="") )
+
+# save plots to pdf
+pdf(file=paste(out_dir,"/",project_name,".eset_bg.XIST.Gender_plot.pdf",sep=""),height=8,width=11)
+# some plots 
+boxplot( log2(bgcor_XIST) ~ clinical_gender, data=xist_gx, main="bg XIST.gx ~ clinical_gender")
+boxplot( log2(bgcor_XIST) ~ xist_gender, data=xist_gx, main="bg XIST.gx ~ xist_gender")
+boxplot( log2(bgcor_XIST) ~ xist_illumina_detection_p_gender, data=xist_gx, main="bg XIST.gx ~ xist_illumina_detection_p_gende")
+dev.off()
+
+```
